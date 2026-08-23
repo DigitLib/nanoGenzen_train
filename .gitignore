@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pt
+*.safetensors
+.venv/
+data/
+.DS_Store
