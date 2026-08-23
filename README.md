@@ -9,9 +9,9 @@ This directory contains the complete pipeline to **generate synthetic logical da
 
 This workflow is based on Karpathy's [nanochat](https://github.com/karpathy/nanochat).
 
-### nanoGenzen model is on [HuggingFace](https://huggingface.co/Sagicc/nanoGentzen) 
+### nanoGenzen model on [HuggingFace](https://huggingface.co/Sagicc/nanoGentzen) 
 
-### dataset (200k examples) is on [HuggingFace](https://huggingface.co/datasets/Sagicc/nanoGentzen)
+### dataset (200k examples) on [HuggingFace](https://huggingface.co/datasets/Sagicc/nanoGentzen)
 
 ---
 
