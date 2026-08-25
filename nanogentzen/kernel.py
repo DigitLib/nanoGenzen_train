@@ -5,60 +5,75 @@ nanogentzen/kernel.py
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+
 class Formula:
     def to_str(self) -> str:
         raise NotImplementedError
+
     def __repr__(self) -> str:
         return self.to_str()
+
     def __eq__(self, other) -> bool:
         return isinstance(other, Formula) and self.to_str() == other.to_str()
+
     def __hash__(self) -> int:
         return hash(self.to_str())
+
 
 @dataclass(frozen=True)
 class Var(Formula):
     name: str
+
     def to_str(self) -> str:
         return self.name
+
 
 @dataclass(frozen=True)
 class Not(Formula):
     inner: Formula
+
     def to_str(self) -> str:
         return f"~{self.inner.to_str()}"
+
 
 @dataclass(frozen=True)
 class And(Formula):
     left: Formula
     right: Formula
+
     def to_str(self) -> str:
         return f"({self.left.to_str()} & {self.right.to_str()})"
+
 
 @dataclass(frozen=True)
 class Or(Formula):
     left: Formula
     right: Formula
+
     def to_str(self) -> str:
         return f"({self.left.to_str()} | {self.right.to_str()})"
+
 
 @dataclass(frozen=True)
 class Imp(Formula):
     left: Formula
     right: Formula
+
     def to_str(self) -> str:
         return f"({self.left.to_str()} => {self.right.to_str()})"
 
+
 @dataclass(frozen=True)
 class Sequent:
-    gamma: Tuple[Formula, ...]  # Antecedents (Gamma)
-    delta: Tuple[Formula, ...]  # Succedents (Delta, |Delta| <= 1 for LI)
+    gamma: Tuple[Formula, ...]  # Antecedents
+    delta: Tuple[Formula, ...]  # Succedents (|Delta| <= 1 for LI)
 
     def is_axiom(self) -> bool:
         """Identity Axiom: Gamma, A |- A and Ex Falso: 0, Gamma |- Delta."""
         delta_set = set(self.delta)
         if any(f in delta_set for f in self.gamma):
             return True
-        if any(isinstance(f, Var) and f.name in ("0", "FALSUM", "false") for f in self.gamma):
+        if any(isinstance(f, Var) and f.name in ("0", "FALSUM", "false", "BOT", "_|_") for f in self.gamma):
             return True
         return False
 
@@ -69,6 +84,7 @@ class Sequent:
 
     def __repr__(self) -> str:
         return self.to_str()
+
 
 RULES: List[str] = [
     "AXIOM",
@@ -84,9 +100,11 @@ RULES: List[str] = [
     "L_CONTR",
 ]
 
+
 def apply_rule(seq: Sequent, rule: str, idx: int = 0) -> Optional[List[Sequent]]:
     """Applies inverse Gentzen LI rules backwards to reduce sequents into premises."""
     gamma, delta = list(seq.gamma), list(seq.delta)
+
     if rule == "AXIOM":
         return [] if seq.is_axiom() else None
 
@@ -148,7 +166,9 @@ def apply_rule(seq: Sequent, rule: str, idx: int = 0) -> Optional[List[Sequent]]
                 tuple(delta),
             )
         ]
+
     return None
+
 
 def verify_proof_tree(node: dict) -> bool:
     """Recursively validates that a generated proof tree is 100% mathematically sound."""

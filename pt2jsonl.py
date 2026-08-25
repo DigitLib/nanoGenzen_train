@@ -1,6 +1,7 @@
 """
 training_steps/pt_to_jsonl.py
-Decodes tensorized PyTorch dataset (.pt) into a clean, uniform JSONL file.
+Decodes tensorized PyTorch dataset (.pt) into a clean, uniform JSONL file
+with proper handling for balanced 50/50 positive and negative (unprovable) transitions.
 """
 
 import json
@@ -34,6 +35,8 @@ def extract_pt_to_jsonl(
     tokenizer = LogicTokenizer()
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
+    pos_count = 0
+    neg_count = 0
     start_time = time.time()
 
     with open(output_jsonl, "w", encoding="utf-8") as f_out:
@@ -45,11 +48,23 @@ def extract_pt_to_jsonl(
 
             sequent_str = tokenizer.decode(token_ids).strip()
             active_tokens = [t for t in token_ids if t != tokenizer.pad_id]
-            rule_name = RULES[rule_idx] if 0 <= rule_idx < len(RULES) else "UNKNOWN"
+
+            if rule_idx == -100:
+                rule_name = "UNPROVABLE"
+                is_provable = False
+                neg_count += 1
+            elif 0 <= rule_idx < len(RULES):
+                rule_name = RULES[rule_idx]
+                is_provable = True
+                pos_count += 1
+            else:
+                rule_name = "UNKNOWN"
+                is_provable = value >= 0.5
 
             record = {
                 "sample_id": idx + 1,
                 "sequent": sequent_str,
+                "is_provable": is_provable,
                 "rule": rule_name,
                 "rule_idx": rule_idx,
                 "pivot": pivot,
@@ -66,6 +81,8 @@ def extract_pt_to_jsonl(
     elapsed = time.time() - start_time
     file_size_mb = os.path.getsize(output_jsonl) / (1024 * 1024)
     print(f"\n[+] Successfully exported {total_samples:,} rows to '{output_jsonl}' ({file_size_mb:.2f} MB) in {elapsed:.2f}s")
+    print(f"    ├─ Positive Provable Transitions : {pos_count:,} ({pos_count/total_samples*100:.1f}%)")
+    print(f"    └─ Negative Unprovable Samples   : {neg_count:,} ({neg_count/total_samples*100:.1f}%)")
 
 
 if __name__ == "__main__":
