@@ -1,136 +1,221 @@
-# nanoGentzen: Training Reproduction Guide
+# nanoGentzen-v2: Training Reproduction & Prover Pipeline
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg)](https://pytorch.org/)
-[![HuggingFace](https://img.shields.io/badge/HuggingFace-model-orange?logo=huggingface)](https://huggingface.co/collections/Sagicc/nanogentzen)
+This repository contains the complete pipeline to **generate synthetic logical datasets, train the Policy-Value Transformer from scratch, package Hugging Face deployment bundles, and verify formal proof search**.
 
-This directory contains the complete pipeline to **generate synthetic logical datasets, train the Policy-Value Transformer network from scratch, convert checkpoints, and evaluate proof performance**.
-
-This workflow is based on Karpathy's [nanochat](https://github.com/karpathy/nanochat).
-
-### nanoGenzen model on [HuggingFace](https://huggingface.co/Sagicc/nanoGentzen) 
-
-### dataset (200k examples) on [HuggingFace](https://huggingface.co/datasets/Sagicc/nanoGentzen)
+* **Model Checkpoint:** [Hugging Face Hub — Sagicc/nanoGentzen-v2](https://huggingface.co/Sagicc/nanoGentzen-v2)
+* **Dataset (400k Transitions):** [Hugging Face Hub — datasets/Sagicc/nanoGentzen-v2](https://huggingface.co/datasets/Sagicc/nanoGentzen-v2)
+* **Interactive UI:** [GitHub — nanoGenzen_GUI](https://www.google.com/search?q=https://github.com/DigitLib/nanoGenzen_GUI)
 
 ---
 
 ## Table of Contents
-1. [Overview & Architecture](#-overview--architecture)
-2. [Environment Setup](#-environment-setup)
-3. [Step 1: Synthetic Dataset Generation](#-step-1-synthetic-dataset-generation)
-4. [Step 2: Training the Policy-Value Network](#-step-2-training-the-policy-value-network)
-5. [Step 3: Checkpoint Conversion to Safetensors](#-step-3-checkpoint-conversion-to-safetensors)
-6. [Step 4: Evaluation & Benchmarks](#-step-4-evaluation--benchmarks)
-7. [Hugging Face Hub Dataset Option](#-hugging-face-hub-dataset-option)
+
+1. Architecture & System Overview
+2. Environment Setup
+3. Step 1: Synthetic Dataset Generation (400k)
+4. Step 2: Training the Policy-Value Network
+5. Step 3: Export & Generate Hugging Face Bundle
+6. Step 4: Benchmarks, CLI & Verification
+7. Loading Directly from Hugging Face Hub
 
 ---
 
-## Overview & Architecture
+## Architecture & System Overview
 
-nanoGentzen trains a **4.86M parameter Bidirectional Transformer** to act as a neural heuristic for backward Gentzen Sequent Calculus ($LI$) proof search.
+nanoGentzen-v2 trains a **4.86M parameter Bidirectional Transformer** to guide backward proof search in **Gentzen’s Intuitionistic Sequent Calculus ($LI$)**. The network jointly optimizes three heads:
 
-The network jointly learns three heads:
-1. **Rule Policy Head**: Predicts which Gentzen inference rule to apply next ($\text{Cross-Entropy}$).
-2. **Pivot Policy Head**: Predicts which antecedent hypothesis $\Gamma[i]$ to decompose ($\text{Cross-Entropy}$).
-3. **Value Head**: Predicts the sound provability probability of the branch in $[0, 1]$ ($\text{MSE}$).
+```text
+                  [ Sequent: Γ ⊢ Δ ]
+                           │
+                           ▼
+ ┌──────────────────────────────────────────────────┐
+ │ Bidirectional Transformer (6 Layers, 8 Heads)    │
+ └──────┬──────────────────┬──────────────────┬─────┘
+        │                  │                  │
+        ▼                  ▼                  ▼
+ ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+ │ Rule Policy  │   │ Pivot Policy │   │  Value Head  │
+ │ (11 Classes) │   │ (16 Classes) │   │   [0.0, 1.0] │
+ └──────────────┘   └──────────────┘   └──────────────┘
+
+```
+
+* **Rule Policy Head:** Predicts the optimal Gentzen inference rule (`Cross-Entropy`).
+* **Pivot Policy Head:** Selects which antecedent premise in $\Gamma$ to decompose (`Cross-Entropy`).
+* **Value Head:** Estimates branch provability probability to prune unprovable subgoals (`MSE`).
 
 ---
 
 ## Environment Setup
 
 ```bash
-cd training_steps
+# Clone the repository
+git clone https://github.com/DigitLib/nanoGenzen_train.git
+cd nanoGenzen_train
 
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install training dependencies
+# Install dependencies
 pip install -r requirements.txt
+
 ```
 
 ---
 
-## Step 1: Synthetic Dataset Generation
+## Step 1: Synthetic Dataset Generation (400k)
 
-Synthetic training data is produced by recursively building random propositional logic trees and generating both valid constructive proofs (positive examples) and unprovable counter-models (negative examples).
+The generation engine constructs certified backward derivation trees using parallel worker pools across constructive theorem schemas, random syntax trees, and adversarial counter-models.
 
 Run the synthetic data generator:
+
 ```bash
-python generate_dataset.py --num-samples 200000 --output_dir ./data
+python generate_dataset.py --num-samples 400000 --output_dir ./data
+
 ```
 
-NOTE: 200k exapmles use ~11G of VRAM. Adapt num-samples according to your hw resources.
+### Generated Artifacts in `./data/`:
 
-### Outputs created in `./data/`:
-* `gentzen_dataset.pt`: Tensorized dataset ready for high-throughput GPU training.
-* `gentzen_dataset.jsonl`: Human-readable derivation steps with AST formula strings.
+* `gentzen_dataset.pt`: Tensorized PyTorch binary (`input_ids`, `target_rule`, `target_pivot`, `target_value`).
+* `gentzen_dataset.jsonl`: Formatted JSONL derivation steps with AST formula strings.
 
 ---
 
 ## Step 2: Training the Policy-Value Network
 
-Train the 6-layer Policy-Value Transformer using multi-task loss with cosine learning rate decay:
+Train the 6-layer Policy-Value Transformer with cosine learning rate decay and linear warmup:
 
 ```bash
 python train.py \
     --data-path ./data/gentzen_dataset.pt \
     --config-path config.json \
-    --batch-size 128 \
+    --batch-size 256 \
     --epochs 20 \
     --lr 5e-4 \
     --output-checkpoint nanogentzen_checkpoint.pt
+
 ```
 
-### Training Metrics Tracked:
-* `Rule Accuracy`: Top-1 accuracy predicting the correct Gentzen rule.
-* `Pivot Accuracy`: Top-1 accuracy selecting the correct premise index.
-* `Value Loss (MSE)`: Mean squared error of branch provability predictions.
+### Performance Benchmarks (20 Epochs):
+
+* **Multi-Task Loss:** Drops from `0.6205 → 0.0105` (Train) and stabilizes at `0.1661` (Val).
+* **Rule Selection Accuracy:** **99.8% Train / 98.4% Val**.
+* **Branch Provability Accuracy:** **99.1% Train / 98.9% Val**.
 
 ---
 
-## Step 3: Checkpoint Conversion to Safetensors
+## Step 3: Export & Generate Hugging Face Bundle
 
-Convert the PyTorch training checkpoint into a zero-copy, secure `nanogentzen_model.safetensors` file:
+Convert weights to `safetensors` and build the complete standalone Hugging Face distribution folder (`hf_model/`):
 
 ```bash
+# 1. Convert PyTorch checkpoint to safetensors
 python pt_to_sftnz.py
+
+# 2. Package all configurations, tokenizers, kernels, and CLI utilities
+python generate_hf_bundle.py
+
+```
+
+### Structure of Generated `hf_model/`:
+
+```text
+hf_model/
+├── config.json                     # PretrainedConfig with auto_map
+├── configuration_nanogentzen.py    # Custom Config class
+├── modeling_nanogentzen.py         # Custom PreTrainedModel class
+├── tokenization_nanogentzen.py     # Custom Tokenizer wrapper
+├── vocab.json                      # 95-token vocabulary dictionary
+├── tokenizer_config.json           # Hugging Face Tokenizer config
+├── special_tokens_map.json         # Special logic tokens mapping
+├── kernel.py                       # Deterministic Gentzen LI kernel
+├── search.py                       # NeuralProofSearch controller
+├── parser.py                       # Natural Language logic compiler
+├── cli.py                          # Interactive REPL & batch prover
+├── benchmarks.txt                  # 19 reference test cases
+├── example_usage.py                # Standalone verification script
+├── training_curves.png             # Loss & accuracy visualization
+└── model.safetensors               # Serialized model weights
+
 ```
 
 ---
 
-## Step 4: Evaluation & Benchmarks
+## Step 4: Benchmarks, CLI & Verification
 
-Verify that the newly trained model successfully guides proof search across standard theorems:
+### 1. Canonical Benchmark Suite
 
-### 1. Standard Benchmark Suite
 ```bash
 python eval_bench.py
-```
-*Tests Modus Ponens, Conjunction Introduction, Transitivity, De Morgan, and the Law of Excluded Middle.*
 
-### 2. 100-Sample Generalization & Latency Benchmark
+```
+
+Evaluates core constructive theorems (Modus Ponens, Transitivity, Constructive De Morgan) and verifies rejection of non-constructive principles (Law of Excluded Middle, Peirce's Law).
+
+### 2. Generalization, OOD Depth & Adversarial Tests
+
 ```bash
 python validate_random.py
+
 ```
-*Measures True Positives, Soundness (100% Kernel Guarantee), Accuracy (>90%), and average latency (<25ms).*
+
+Measures variable renaming invariance (100%), depth extrapolation (100%), adversarial near-miss rejection (100%), and formal kernel soundness (100%).
+
+### 3. Interactive REPL & Batch File Verification
+
+```bash
+# Batch evaluate the included reference benchmark suite
+python cli.py -f benchmarks.txt
+
+# Run a single English syllogism or symbolic sequent
+python cli.py -q "If it rains and it is windy, then power goes out. It rains. It is windy. Does power go out?"
+
+# Launch the interactive terminal
+python cli.py
+
+```
 
 ---
 
-## Hugging Face Hub Dataset Option
+## Loading Directly from Hugging Face Hub
 
-If you prefer not to generate synthetic samples locally, pre-generated datasets can be downloaded directly from the Hugging Face Hub:
+### 1. Dataset Loading
 
 ```python
 from datasets import load_dataset
 
-dataset = load_dataset("<YOUR_HF_USERNAME>/nanogentzen-dataset")
-print(dataset["train"][0])
+dataset = load_dataset("Sagicc/nanoGentzen-v2", split="train")
+print(f"Loaded {len(dataset):,} transitions")
+print(dataset[0])
+
+```
+
+### 2. Model & Tokenizer Remote Loading
+
+```python
+import torch
+from transformers import AutoModel, AutoTokenizer
+from kernel import Sequent, Imp, Var, verify_proof_tree
+from search import NeuralProofSearch
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model = AutoModel.from_pretrained("Sagicc/nanoGentzen-v2", trust_remote_code=True).to(device)
+tokenizer = AutoTokenizer.from_pretrained("Sagicc/nanoGentzen-v2", trust_remote_code=True)
+searcher = NeuralProofSearch(model, tokenizer, device=device)
+
+# Modus Ponens: P, (P => Q) |- Q
+P, Q = Var("P"), Var("Q")
+goal = Sequent((P, Imp(P, Q)), (Q,))
+proof = searcher.prove(goal, max_depth=8)
+
+print("Proof Verified Sound:", verify_proof_tree(proof))
+
 ```
 
 ---
 
 ## License
 
-This training pipeline is released under the **MIT License**.
+This project is released under the **MIT License**.

@@ -10,16 +10,24 @@ from nanogentzen.kernel import And, Formula, Imp, Not, Or, Sequent, Var
 
 
 class FormulaParser:
-    """Recursive descent parser for propositional formulas."""
+    """Recursive descent parser for propositional formulas and sequents."""
 
     def __init__(self, text: str):
-        # Normalize operator symbols
-        text = text.replace("⟶", "|-").replace("->", "=>").replace("∧", "&").replace("∨", "|").replace("¬", "~")
+        text = (
+            text.replace("⟶", "|-")
+            .replace("⊢", "|-")
+            .replace("->", "=>")
+            .replace("⇒", "=>")
+            .replace("⊃", "=>")
+            .replace("∧", "&")
+            .replace("∨", "|")
+            .replace("¬", "~")
+        )
+        self.raw_text = text
         self.tokens = self._tokenize(text)
         self.pos = 0
 
     def _tokenize(self, text: str) -> List[str]:
-        # NOTE: TURNSTILE must come before OR so '|-' is not parsed as '|' and '-'
         token_spec = [
             ("TURNSTILE", r"\|-"),
             ("LPAREN", r"\("),
@@ -29,7 +37,7 @@ class FormulaParser:
             ("OR", r"\||\bor\b"),
             ("NOT", r"~|\bnot\b"),
             ("COMMA", r","),
-            ("ZERO", r"\b0\b|\bfalse\b"),
+            ("ZERO", r"\b0\b|\bfalse\b|\bBOT\b"),
             ("VAR", r"[A-Za-z_][A-Za-z0-9_]*"),
             ("SKIP", r"\s+"),
         ]
@@ -62,19 +70,21 @@ class FormulaParser:
             raise ValueError(f"Unexpected end of input, expected {expected}")
         tok = self.tokens[self.pos]
         if expected and tok != expected:
-            raise ValueError(f"Expected '{expected}', got '{tok}' at token {self.pos}")
+            raise ValueError(f"Expected '{expected}', got '{tok}' at position {self.pos}")
         self.pos += 1
         return tok
 
     def parse_sequent(self) -> Sequent:
-        """Parses Gamma |- Delta"""
+        if "|-" not in self.tokens:
+            goal_formula = self.parse_formula()
+            return Sequent((), (goal_formula,))
+
         gamma: List[Formula] = []
         delta: List[Formula] = []
 
-        # Parse antecedents (Gamma)
         if self._peek() and self._peek() != "|-":
             while True:
-                if self._peek() in ("0", "false"):
+                if self._peek() in ("0", "false", "BOT"):
                     self._consume()
                 else:
                     gamma.append(self.parse_formula())
@@ -85,12 +95,9 @@ class FormulaParser:
 
         if self._peek() == "|-":
             self._consume("|-")
-        elif not gamma and not self._peek():
-            raise ValueError("Empty sequent")
 
-        # Parse succedents (Delta)
         if self._peek():
-            if self._peek() in ("0", "false"):
+            if self._peek() in ("0", "false", "BOT"):
                 self._consume()
             else:
                 while self._peek():
@@ -109,7 +116,7 @@ class FormulaParser:
         left = self._parse_or()
         if self._peek() == "=>":
             self._consume("=>")
-            right = self._parse_imp()  # Right-associative
+            right = self._parse_imp()
             return Imp(left, right)
         return left
 
@@ -149,10 +156,6 @@ class FormulaParser:
 
 
 def parse_symbolic_sequent(text: str) -> Optional[Sequent]:
-    """Tries to parse a symbolic sequent like '(P => Q), P |- Q'."""
-    # A symbolic sequent or formula must contain formal operators or turnstile
-    if not any(sym in text for sym in ["|-", "⟶", "=>", "->", "&", "|", "~"]):
-        return None
     try:
         parser = FormulaParser(text)
         seq = parser.parse_sequent()
@@ -164,111 +167,120 @@ def parse_symbolic_sequent(text: str) -> Optional[Sequent]:
 
 
 def normalize_word(w: str) -> str:
-    w = w.lower()
-    if w in {"is", "are", "in", "the", "a", "an", "it", "did", "do", "does", "were", "was", "then", "of", "to", "there"}:
+    low = w.lower()
+    # If the token is a single variable letter (e.g., A, P, X), do not drop it as a stopword
+    if len(w) == 1 and w.isalpha():
+        return w.upper()
+
+    stopwords = {
+        "is", "are", "in", "the", "an", "it", "did", "do", "does",
+        "were", "was", "then", "of", "to", "there", "should", "could",
+        "would", "can", "will", "shall", "must", "may", "might", "a"
+    }
+    if low in stopwords:
         return ""
-    if w.endswith("ing") and len(w) > 4:
-        w = w[:-3]
-    elif w.endswith("ed") and len(w) > 3:
-        w = w[:-2]
-    elif w.endswith("es") and len(w) > 3:
-        w = w[:-2]
-    elif w.endswith("s") and len(w) > 2 and not w.endswith("ss"):
-        w = w[:-1]
-    return w.capitalize()
+    if low.endswith("ing") and len(low) > 4:
+        low = low[:-3]
+    elif low.endswith("ed") and len(low) > 3:
+        low = low[:-2]
+    elif low.endswith("es") and len(low) > 3:
+        low = low[:-2]
+    elif low.endswith("s") and len(low) > 2 and not low.endswith("ss"):
+        low = low[:-1]
+    return low.capitalize()
 
 
-def clean_term(phrase: str) -> Var:
-    """Cleans and normalizes a natural language phrase into a consistent PascalCase propositional variable."""
-    words = [normalize_word(w) for w in re.findall(r"[A-Za-z0-9]+", phrase)]
+def clean_term(phrase: str) -> Formula:
+    raw_tokens = re.findall(r"[A-Za-z0-9]+", phrase)
+    if not raw_tokens:
+        return Var("X")
+    if len(raw_tokens) == 1 and len(raw_tokens[0]) == 1:
+        return Var(raw_tokens[0].upper())
+
+    words = [normalize_word(w) for w in raw_tokens]
     words = [w for w in words if w]
     name = "".join(words)
-    return Var(name if name else "X")
+    return Var(name if name else raw_tokens[0].capitalize())
+
+
+def parse_nl_formula(phrase: str) -> Formula:
+    """Recursively splits natural language sub-clauses on 'or', 'and', and 'not'."""
+    phrase = phrase.strip()
+
+    # 1. OR split
+    or_parts = re.split(r"\bor\b|\|", phrase, maxsplit=1, flags=re.IGNORECASE)
+    if len(or_parts) == 2 and or_parts[0].strip() and or_parts[1].strip():
+        return Or(parse_nl_formula(or_parts[0]), parse_nl_formula(or_parts[1]))
+
+    # 2. AND split
+    and_parts = re.split(r"\band\b|&", phrase, maxsplit=1, flags=re.IGNORECASE)
+    if len(and_parts) == 2 and and_parts[0].strip() and and_parts[1].strip():
+        return And(parse_nl_formula(and_parts[0]), parse_nl_formula(and_parts[1]))
+
+    # 3. NOT prefix
+    if re.match(r"^(?:not\s+|~\s*|it\s+is\s+not\s+(?:the\s+case\s+that\s+)?)", phrase, re.IGNORECASE):
+        core = re.sub(r"^(?:not\s+|~\s*|it\s+is\s+not\s+(?:the\s+case\s+that\s+)?)", "", phrase, flags=re.IGNORECASE)
+        return Not(parse_nl_formula(core))
+
+    return clean_term(phrase)
 
 
 def parse_natural_language(text: str) -> Optional[Tuple[Sequent, str]]:
-    """
-    Translates natural language syllogisms, implications, and queries
-    into intuitionistic sequents with an explanation.
-    """
     text_clean = text.strip()
-    
-    # Extract questions (ending with ?) or last sentence
     sentences = [s.strip() for s in re.split(r"[.!?\n]+", text_clean) if s.strip()]
     if not sentences:
         return None
 
-    # Identify conclusion / goal
     has_q = "?" in text_clean
     target_q = sentences[-1]
     premise_sentences = sentences[:-1] if (has_q or len(sentences) > 1) else sentences
 
     premises: List[Formula] = []
 
+    # Regex matching common natural language conditional triggers
+    cond_pattern = re.compile(
+        r"^(?:if|assuming|suppose|supposing|given\s+that|given|whenever|when|provided\s+that|provided)\s+",
+        re.IGNORECASE,
+    )
+
     for s in premise_sentences:
         lower_s = s.lower().strip()
-        
-        # 1. Implication with 'if' ... 'then' or 'if' ... ','
-        if lower_s.startswith("if "):
-            content = s[3:].strip()
+
+        # 1. Conditionals: 'if', 'assuming', 'suppose', 'given', 'whenever' ...
+        if cond_pattern.match(lower_s):
+            content = cond_pattern.sub("", s).strip()
             parts = re.split(r"\bthen\b|,", content, maxsplit=1)
-            if len(parts) == 2:
-                premises.append(Imp(clean_term(parts[0]), clean_term(parts[1])))
-                continue
-            # "If A is in B"
-            parts_in = re.split(r"\bis\s+in\b|\bis\b", content, maxsplit=1, flags=re.IGNORECASE)
-            if len(parts_in) == 2:
-                premises.append(Imp(clean_term(parts_in[0]), clean_term(parts_in[1])))
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                premises.append(Imp(parse_nl_formula(parts[0]), parse_nl_formula(parts[1])))
                 continue
 
-        # 2. "In X, Y" (e.g. "In Spring, flowers blooming" or "In Spring flowers blooming")
-        if lower_s.startswith("in "):
-            content = s[3:].strip()
-            parts = re.split(r",|\bare\b|\bis\b", content, maxsplit=1, flags=re.IGNORECASE)
-            if len(parts) == 2:
-                premises.append(Imp(clean_term(parts[0]), clean_term(parts[1])))
-                continue
-            words = content.split(maxsplit=1)
-            if len(words) == 2:
-                premises.append(Imp(clean_term(words[0]), clean_term(words[1])))
-                continue
-
-        # 3. "X implies Y" / "X leads to Y" / "X means Y"
+        # 2. Infix implication: "X implies Y", "X leads to Y", "X means Y"
         match_imp = re.split(r"\bimplies\b|\bleads to\b|\bmeans\b", s, maxsplit=1, flags=re.IGNORECASE)
-        if len(match_imp) == 2:
-            premises.append(Imp(clean_term(match_imp[0]), clean_term(match_imp[1])))
+        if len(match_imp) == 2 and match_imp[0].strip() and match_imp[1].strip():
+            premises.append(Imp(parse_nl_formula(match_imp[0]), parse_nl_formula(match_imp[1])))
             continue
 
-        # 4. Negation: "Not X" / "It is not wet" / "~Wet"
-        if lower_s.startswith("not ") or " not " in lower_s or "didn't" in lower_s or "no " in lower_s:
-            # Extract negated subject
-            core = re.sub(r"\bnot\b|\bdid not\b|\bdidn't\b|\bis not\b|\bno\b", "", s, flags=re.IGNORECASE)
-            premises.append(Not(clean_term(core)))
-            continue
+        premises.append(parse_nl_formula(s))
 
-        # 5. Simple Assertion: "X is in Y" -> X => Y
-        parts_is = re.split(r"\bis\s+in\b", s, maxsplit=1, flags=re.IGNORECASE)
-        if len(parts_is) == 2:
-            premises.append(Imp(clean_term(parts_is[0]), clean_term(parts_is[1])))
-            continue
+    # --- Parse Goal from target_q ---
+    q_lower = target_q.lower().strip()
 
-        # Default atomic variable
-        premises.append(clean_term(s))
-
-    # Parse Goal from target_q
-    q_lower = target_q.lower()
-    
-    # Syllogism query: "Are flowers blooming in April?" -> April => FlowersBlooming
-    match_q_in = re.search(r"\b(?:are|is|do|did)\s+(.+?)\s+in\s+([a-zA-Z0-9]+)", target_q, re.IGNORECASE)
-    if match_q_in:
-        property_term = clean_term(match_q_in.group(1))
-        subject_term = clean_term(match_q_in.group(2))
-        goal = Imp(subject_term, property_term)
-    elif "not " in q_lower or "didn't" in q_lower:
-        core = re.sub(r"\b(?:are|is|did|do|was|were)\s+|\bnot\b|\?", "", target_q, flags=re.IGNORECASE)
-        goal = Not(clean_term(core))
+    # Infix conditional goal: "Is it B if A?"
+    if " if " in q_lower:
+        consequent_part, antecedent_part = re.split(r"\bif\b", target_q, maxsplit=1, flags=re.IGNORECASE)
+        goal = Imp(parse_nl_formula(antecedent_part), parse_nl_formula(consequent_part))
+    # Prefix conditional goal: "Assuming A, is it B?" / "If A, then B?"
+    elif cond_pattern.match(q_lower):
+        content = cond_pattern.sub("", target_q).strip()
+        parts = re.split(r"\bthen\b|,", content, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            goal = Imp(parse_nl_formula(parts[0]), parse_nl_formula(parts[1]))
+        else:
+            goal = parse_nl_formula(target_q)
     else:
-        goal = clean_term(target_q)
+        # Strip question prefix like 'Is', 'Does', 'Should'
+        core_q = re.sub(r"^(?:is|are|does|do|should|can|could|would)\s+", "", target_q, flags=re.IGNORECASE)
+        goal = parse_nl_formula(core_q)
 
     seq = Sequent(tuple(premises), (goal,))
     desc = f"Extracted {len(premises)} premise(s) ⟶ Goal: {goal.to_str()}"
