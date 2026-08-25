@@ -2,6 +2,8 @@
 
 This repository contains the complete pipeline to **generate synthetic logical datasets, train the Policy-Value Transformer from scratch, package Hugging Face deployment bundles, and verify formal proof search**.
 
+Complete train is inspired by Karpathy's [nanochat](https://github.com/karpathy/nanochat)
+
 * **Model Checkpoint:** [Hugging Face Hub — Sagicc/nanoGentzen-v2](https://huggingface.co/Sagicc/nanoGentzen-v2)
 * **Dataset (400k Transitions):** [Hugging Face Hub — datasets/Sagicc/nanoGentzen-v2](https://huggingface.co/datasets/Sagicc/nanoGentzen-v2)
 * **Interactive UI:** [GitHub — nanoGenzen_GUI](https://www.google.com/search?q=https://github.com/DigitLib/nanoGenzen_GUI)
